@@ -1,0 +1,7 @@
+gym
+numpy
+pygame
+torch
+torchvision
+shapely
+opencv-python
