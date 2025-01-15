@@ -75,13 +75,13 @@ def train(episodes=1000):
                 
                 # Prepare batch data
                 spatial_obs = torch.FloatTensor(np.array([b[0] for b in batch])).to(rl_bot.device)
-                time_left = torch.FloatTensor(np.array([b[1] for b in batch])).to(rl_bot.device)
-                scores = torch.FloatTensor(np.array([b[2] for b in batch])).to(rl_bot.device)
+                time_left = torch.FloatTensor([b[1] for b in batch]).to(rl_bot.device)
+                scores = torch.FloatTensor([b[2] for b in batch]).to(rl_bot.device)
                 actions = torch.LongTensor(np.array([b[3] for b in batch])).to(rl_bot.device)
                 rewards = torch.FloatTensor(np.array([b[4] for b in batch])).to(rl_bot.device)
                 next_spatial = torch.FloatTensor(np.array([b[5] for b in batch])).to(rl_bot.device)
-                next_time = torch.FloatTensor(np.array([b[6] for b in batch])).to(rl_bot.device)
-                next_scores = torch.FloatTensor(np.array([b[7] for b in batch])).to(rl_bot.device)
+                next_time = torch.FloatTensor([b[6] for b in batch]).to(rl_bot.device)
+                next_scores = torch.FloatTensor([b[7] for b in batch]).to(rl_bot.device)
                 dones = torch.FloatTensor(np.array([b[8] for b in batch])).to(rl_bot.device)
                 
                 # Get current Q values

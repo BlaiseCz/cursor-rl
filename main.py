@@ -60,22 +60,22 @@ def draw_game_over(window, scores, map_size):
     overlay.set_alpha(128)
     window.blit(overlay, (0, 0))
     
-    # Setup font
-    font = pygame.font.Font(None, 74)
-    small_font = pygame.font.Font(None, 50)
+    # Setup smaller fonts for 300x300 window
+    font = pygame.font.Font(None, 48)  # Reduced from 74
+    small_font = pygame.font.Font(None, 32)  # Reduced from 50
     
-    # Draw "Game Over" text
+    # Draw "Game Over" text higher up
     game_over_text = font.render("Game Over!", True, (255, 255, 255))
-    text_rect = game_over_text.get_rect(center=(window.get_width()//2, window.get_height()//3))
+    text_rect = game_over_text.get_rect(center=(window.get_width()//2, window.get_height()//4))  # Changed from //3
     window.blit(game_over_text, text_rect)
     
-    # Draw scores
-    y_offset = window.get_height()//2 - 50
+    # Start scores closer to "Game Over" text with smaller spacing
+    y_offset = window.get_height()//3  # Changed from //2 - 50
     colors = {
-        'human': (0, 0, 255),    # Blue
-        'policy': (255, 0, 0),   # Red
-        'random': (0, 255, 0),   # Green
-        # 'rl': (0, 255, 0),   # Green
+        'human': (0, 0, 255),
+        'policy': (255, 0, 0),
+        'random': (0, 255, 0),
+        'rl': (0, 255, 0),
     }
     
     # Find winner
@@ -85,18 +85,18 @@ def draw_game_over(window, scores, map_size):
         score_text = small_font.render(f"{player}: {score}", True, colors[player])
         text_rect = score_text.get_rect(center=(window.get_width()//2, y_offset))
         window.blit(score_text, text_rect)
-        y_offset += 50
+        y_offset += 30  # Reduced from 50
     
     # Draw winner announcement
     winner_text = small_font.render(f"Winner: {winner[0]}!", True, colors[winner[0]])
     text_rect = winner_text.get_rect(center=(window.get_width()//2, y_offset))
     window.blit(winner_text, text_rect)
     
-    # Draw "New Game" button
+    # Draw smaller "New Game" button
     button_color = (0, 200, 0)
-    button_rect = pygame.Rect(0, 0, 200, 50)
-    button_rect.center = (window.get_width()//2, y_offset + 70)
-    pygame.draw.rect(window, button_color, button_rect, border_radius=10)
+    button_rect = pygame.Rect(0, 0, 160, 40)  # Reduced from 200, 50
+    button_rect.center = (window.get_width()//2, y_offset + 50)  # Reduced from 70
+    pygame.draw.rect(window, button_color, button_rect, border_radius=8)
     
     button_text = small_font.render("New Game", True, (255, 255, 255))
     text_rect = button_text.get_rect(center=button_rect.center)
@@ -110,8 +110,8 @@ def main():
     map_size = (300, 300)
     env = CoinCollectionEnv(map_size=map_size, render_mode='human')
     window = env.window  # Get the pygame window from environment
-    # rl_bot = RLBot()
-    # rl_bot.load('best_rl_model.pth')  # Load trained model
+    rl_bot = RLBot()
+    rl_bot.load('best_rl_model.pth')  # Load trained model
     
 
     running = True
@@ -121,7 +121,7 @@ def main():
             'human': None,
             'policy': PolicyBot(),
             'random': RandomBot(),
-            # 'rl': rl_bot
+            'rl': rl_bot
         }
         
         # Game loop

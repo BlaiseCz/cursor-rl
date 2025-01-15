@@ -32,7 +32,7 @@ class CoinCollectionEnv(gym.Env):
         self.map_size = map_size
         self.render_mode = render_mode
         self.num_coins = num_coins
-        self.game_duration = 15  # seconds
+        self.game_duration = 10  # seconds
         self.max_steps = 300
         
         # Initialize spaces

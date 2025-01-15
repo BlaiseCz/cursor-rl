@@ -51,6 +51,12 @@ class DQN(nn.Module):
                 module.bias.data.zero_()
     
     def forward(self, spatial_obs, time_left, score):
+        # Ensure inputs have correct shape
+        if isinstance(time_left, torch.Tensor):
+            time_left = time_left.view(-1, 1)  # Reshape to [batch_size, 1]
+        if isinstance(score, torch.Tensor):
+            score = score.view(-1, 1)  # Reshape to [batch_size, 1]
+        
         spatial_features = self.spatial_net(spatial_obs)
         aux_features = self.aux_net(torch.cat([time_left, score], dim=1))
         combined = torch.cat([spatial_features, aux_features], dim=1)
@@ -82,3 +88,12 @@ class RLBot(BaseBot):
             
             q_values = self.model(spatial_obs, time_left, score)
             return torch.argmax(q_values).item() 
+    
+    def load(self, path):
+        """Load a trained model from a file"""
+        try:
+            self.model.load_state_dict(torch.load(path, map_location=self.device))
+            self.target_model.load_state_dict(self.model.state_dict())
+            print(f"Successfully loaded model from {path}")
+        except Exception as e:
+            print(f"Error loading model: {e}") 
