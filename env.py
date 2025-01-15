@@ -17,12 +17,13 @@ class CoinCollectionEnv(gym.Env):
     }
     
     COIN_COLOR = (255, 255, 0)   # Yellow
+    RED_COIN_COLOR = (255, 0, 0) # Red
     PLAYER_SPEED = 5
     PLAYER_RADIUS = 10
     COIN_RADIUS = 5
     COLLECTION_RADIUS = 20
     
-    def __init__(self, map_size=(300, 300), render_mode=None, num_coins=20):
+    def __init__(self, map_size=(300, 300), render_mode=None, num_coins=10):
         super().__init__()
         
         if map_size != (300, 300):
@@ -45,10 +46,12 @@ class CoinCollectionEnv(gym.Env):
         self.last_coin_spawn = 0
         self.coin_spawn_interval = 1  # seconds
         self.coins_per_spawn = 3
-        
+        self.num_red_coins = 5
+
         # Reset environment
         self.reset()
-    
+        
+
     def _init_spaces(self):
         """Initialize observation and action spaces"""
         # Action space: 0: up, 1: right, 2: down, 3: left
@@ -86,11 +89,12 @@ class CoinCollectionEnv(gym.Env):
         # Reset game state
         self.step_count = 0
         self.start_time = time.time()
-        self.last_coin_spawn = self.start_time  # Reset coin spawn timer
+        self.last_coin_spawn = self.start_time
         
         # Generate game elements
         self._generate_players()
         self._generate_coins()
+        self._generate_red_coins()
         
         # Initialize scores
         self.player_scores = {player: 0 for player in self.PLAYER_COLORS.keys()}
@@ -132,6 +136,26 @@ class CoinCollectionEnv(gym.Env):
                     break
         
         self.coins = np.array(coin_positions) if coin_positions else np.zeros((0, 2))
+    
+    def _generate_red_coins(self):
+        """Generate red coin positions"""
+        margin = 30
+        red_coin_positions = []
+        
+        for _ in range(self.num_red_coins):
+            while True:
+                pos = self.np_random.uniform(
+                    low=[margin, margin],
+                    high=[self.map_size[0]-margin, self.map_size[1]-margin],
+                    size=(2,)
+                )
+                # Ensure red coins don't spawn too close to other coins or red coins
+                if (not any(np.linalg.norm(pos - np.array(coin)) < margin for coin in red_coin_positions) and
+                    not any(np.linalg.norm(pos - coin) < margin for coin in self.coins)):
+                    red_coin_positions.append(pos)
+                    break
+        
+        self.red_coins = np.array(red_coin_positions)
     
     def step(self, actions):
         """Execute one time step within the environment"""
@@ -190,15 +214,25 @@ class CoinCollectionEnv(gym.Env):
             return
         
         for player_name, player_pos in self.player_positions.items():
+            # Check regular coins
             distances = np.linalg.norm(self.coins - player_pos, axis=1)
             collected = distances < self.COLLECTION_RADIUS
             
             if np.any(collected):
                 # Update score
                 self.player_scores[player_name] += np.sum(collected)
-                
                 # Remove collected coins
                 self.coins = self.coins[~collected]
+            
+            # Check red coins
+            red_distances = np.linalg.norm(self.red_coins - player_pos, axis=1)
+            red_collected = red_distances < self.COLLECTION_RADIUS
+            
+            if np.any(red_collected):
+                # Update score (negative for red coins)
+                self.player_scores[player_name] -= np.sum(red_collected)
+                # Regenerate all red coins
+                self._generate_red_coins()
     
     def _is_done(self):
         """Check if episode is done"""
@@ -230,35 +264,68 @@ class CoinCollectionEnv(gym.Env):
         return reward
     
     def _get_obs(self):
-        """Get current observation"""
-        # Create a 3-channel 300x300 observation space
-        obs_array = np.zeros((3, 300, 300), dtype=np.float32)
+        """Get current observation with sparse representation"""
+        # Get RL bot position
+        rl_pos = self.player_positions['rl']
         
-        # Channel 0: RL bot position (value 1.0)
-        rl_pos = self.player_positions['rl'].astype(int)
-        obs_array[0, 
-                 max(0, rl_pos[1]-5):min(300, rl_pos[1]+6), 
-                 max(0, rl_pos[0]-5):min(300, rl_pos[0]+6)] = 1.0
+        # Get other players' positions
+        other_players = {
+            name: pos.copy() 
+            for name, pos in self.player_positions.items() 
+            if name != 'rl'
+        }
         
-        # Channel 1: Other players (value 1.0)
-        for name, pos in self.player_positions.items():
-            if name != 'rl':
-                pos = pos.astype(int)
-                obs_array[1,
-                         max(0, pos[1]-5):min(300, pos[1]+6),
-                         max(0, pos[0]-5):min(300, pos[0]+6)] = 1.0
+        # Convert coins to list if they exist
+        coin_list = self.coins.tolist() if len(self.coins.shape) == 2 and self.coins.shape[0] > 0 else []
+        red_coin_list = self.red_coins.tolist() if len(self.red_coins.shape) == 2 and self.red_coins.shape[0] > 0 else []
         
-        # Channel 2: Coins (value 1.0)
-        for coin in self.coins:
-            coin_pos = coin.astype(int)
-            obs_array[2,
-                     max(0, coin_pos[1]-3):min(300, coin_pos[1]+4),
-                     max(0, coin_pos[0]-3):min(300, coin_pos[0]+4)] = 1.0
+        # Calculate distances to nearest coins and red coins
+        nearest_coin_dist = float('inf')
+        nearest_coin_dir = np.array([0.0, 0.0])
+        if coin_list:
+            distances = np.linalg.norm(self.coins - rl_pos, axis=1)
+            nearest_idx = np.argmin(distances)
+            nearest_coin_dist = distances[nearest_idx]
+            if nearest_coin_dist > 0:
+                nearest_coin_dir = (self.coins[nearest_idx] - rl_pos) / nearest_coin_dist
+        
+        nearest_red_dist = float('inf')
+        nearest_red_dir = np.array([0.0, 0.0])
+        if len(red_coin_list) > 0:
+            red_distances = np.linalg.norm(self.red_coins - rl_pos, axis=1)
+            nearest_red_idx = np.argmin(red_distances)
+            nearest_red_dist = red_distances[nearest_red_idx]
+            if nearest_red_dist > 0:
+                nearest_red_dir = (self.red_coins[nearest_red_idx] - rl_pos) / nearest_red_dist
+        
+        # Calculate distances and directions to other players
+        player_features = []
+        for other_pos in other_players.values():
+            dist = np.linalg.norm(other_pos - rl_pos)
+            dir_vector = (other_pos - rl_pos) / max(dist, 1e-6)
+            player_features.extend([dist / self.map_size[0], dir_vector[0], dir_vector[1]])
+        
+        # Pad player features if needed (assuming max 3 other players)
+        while len(player_features) < 9:  # 3 players * 3 features
+            player_features.extend([1.0, 0.0, 0.0])  # Large distance, zero direction
         
         return {
-            'spatial_obs': obs_array,  # 3-channel spatial observation
+            'position': rl_pos / self.map_size[0],  # Normalized position
+            'nearest_coin': np.array([
+                nearest_coin_dist / self.map_size[0],  # Normalized distance
+                nearest_coin_dir[0],
+                nearest_coin_dir[1]
+            ], dtype=np.float32),
+            'nearest_red_coin': np.array([
+                nearest_red_dist / self.map_size[0],  # Normalized distance
+                nearest_red_dir[0],
+                nearest_red_dir[1]
+            ], dtype=np.float32),
+            'other_players': np.array(player_features, dtype=np.float32),
             'time_left': np.array([self.game_duration - (time.time() - self.start_time)], dtype=np.float32),
-            'score': self.player_scores['rl']
+            'score': np.array([self.player_scores['rl']], dtype=np.float32),
+            'coins_left': np.array([len(coin_list)], dtype=np.float32),
+            'red_coins_left': np.array([len(red_coin_list)], dtype=np.float32)
         }
     
     def _get_info(self):
@@ -277,9 +344,13 @@ class CoinCollectionEnv(gym.Env):
         # Clear screen
         self.window.fill((255, 255, 255))
         
-        # Draw coins
+        # Draw regular coins
         for coin_pos in self.coins:
             pygame.draw.circle(self.window, self.COIN_COLOR, coin_pos.astype(int), self.COIN_RADIUS)
+        
+        # Draw red coins
+        for red_coin_pos in self.red_coins:
+            pygame.draw.circle(self.window, self.RED_COIN_COLOR, red_coin_pos.astype(int), self.COIN_RADIUS)
         
         # Draw players
         for player, pos in self.player_positions.items():

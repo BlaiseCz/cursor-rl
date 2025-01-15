@@ -111,7 +111,7 @@ def main():
     env = CoinCollectionEnv(map_size=map_size, render_mode='human')
     window = env.window  # Get the pygame window from environment
     rl_bot = RLBot()
-    rl_bot.load('best_rl_model.pth')  # Load trained model
+    rl_bot.load('best_model_red_coins.pth')  # Load trained model
     
 
     running = True

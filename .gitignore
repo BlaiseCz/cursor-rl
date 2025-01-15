@@ -31,3 +31,4 @@ rewards_plot.png
 logs/
 
 best_model.pth
+best_model_red_coins.pth

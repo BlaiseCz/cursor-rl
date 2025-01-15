@@ -12,32 +12,26 @@ class RandomBot(BaseBot):
 
 class PolicyBot(BaseBot):
     def get_action(self, observation):
-        # Get spatial observation
-        spatial_obs = observation['spatial_obs']
+        # Get bot position and nearest coin information
+        bot_pos = observation['position'] * 300  # Denormalize position
+        nearest_coin_dist = observation['nearest_coin'][0] * 300  # Denormalize distance
+        nearest_coin_dir = observation['nearest_coin'][1:3]  # Get direction vector
         
-        # Get bot position
-        bot_positions = np.where(spatial_obs[1] > 0.5)
-        if len(bot_positions[0]) == 0:
-            return np.random.randint(0, 4)
+        # Get nearest red coin information
+        nearest_red_dist = observation['nearest_red_coin'][0] * 300  # Denormalize distance
+        nearest_red_dir = observation['nearest_red_coin'][1:3]  # Get direction vector
         
-        bot_y = int(np.mean(bot_positions[0]))
-        bot_x = int(np.mean(bot_positions[1]))
+        # If there's a red coin too close, move away from it
+        if nearest_red_dist < 50:  # Threshold for avoidance
+            # Move in opposite direction of red coin
+            dx = -nearest_red_dir[0]
+            dy = -nearest_red_dir[1]
+        else:
+            # Move towards nearest regular coin
+            dx = nearest_coin_dir[0]
+            dy = nearest_coin_dir[1]
         
-        # Get coin positions
-        coin_positions = np.where(spatial_obs[2] > 0.5)
-        if len(coin_positions[0]) == 0:
-            return np.random.randint(0, 4)
-        
-        # Find nearest coin
-        coins = list(zip(coin_positions[1], coin_positions[0]))  # x, y coordinates
-        distances = [(x-bot_x)**2 + (y-bot_y)**2 for x, y in coins]
-        nearest_x, nearest_y = coins[np.argmin(distances)]
-        
-        # Simple movement: move in direction of largest difference
-        dx = nearest_x - bot_x
-        dy = nearest_y - bot_y
-        
-        # Move horizontally or vertically based on which distance is larger
+        # Choose action based on the largest direction component
         if abs(dx) >= abs(dy):
             if dx > 0:
                 return 1  # right
