@@ -1,16 +1,16 @@
-from env import CoinCollectionEnv
-from bots import PolicyBot
-from rl_bot import RLBot
-import numpy as np
-from tqdm import tqdm
-import matplotlib.pyplot as plt
 import argparse
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-import random
 from collections import deque
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn.functional as F
+from tqdm import tqdm
+
+from bots import PolicyBot, HumanBot
+from env import CoinCollectionEnv
+from rl_bot import RLBot
+
 
 def plot_rewards(rewards, window_size=100):
     """Plot rewards with moving average"""
@@ -37,6 +37,7 @@ def plot_rewards(rewards, window_size=100):
 def train(episodes=10000):
     env = CoinCollectionEnv(map_size=(300, 300), render_mode=None)
     policy_bot = PolicyBot()
+    human_bot = HumanBot()
     rl_bot = RLBot()
     
     best_reward = -np.inf
@@ -54,6 +55,7 @@ def train(episodes=10000):
             # Get actions for both bots
             actions = {
                 'policy': policy_bot.get_action(observation),
+                'human': human_bot.get_action(observation),
                 'rl': rl_bot.get_action(observation)
             }
             
@@ -79,8 +81,8 @@ def train(episodes=10000):
                     # Prepare batch data
                     current_obs = {
                         'position': torch.FloatTensor(np.array([b[0]['position'] for b in batch])).to(rl_bot.device),
-                        'nearest_coin': torch.FloatTensor(np.array([b[0]['nearest_coin'] for b in batch])).to(rl_bot.device),
-                        'nearest_red_coin': torch.FloatTensor(np.array([b[0]['nearest_red_coin'] for b in batch])).to(rl_bot.device),
+                        'coins': torch.FloatTensor(np.array([b[0]['coins'] for b in batch])).to(rl_bot.device),
+                        'red_coins': torch.FloatTensor(np.array([b[0]['red_coins'] for b in batch])).to(rl_bot.device),
                         'other_players': torch.FloatTensor(np.array([b[0]['other_players'] for b in batch])).to(rl_bot.device),
                         'time_left': torch.FloatTensor(np.array([b[0]['time_left'] for b in batch])).to(rl_bot.device),
                         'score': torch.FloatTensor(np.array([b[0]['score'] for b in batch])).to(rl_bot.device),
@@ -90,8 +92,8 @@ def train(episodes=10000):
                     
                     next_obs = {
                         'position': torch.FloatTensor(np.array([b[3]['position'] for b in batch])).to(rl_bot.device),
-                        'nearest_coin': torch.FloatTensor(np.array([b[3]['nearest_coin'] for b in batch])).to(rl_bot.device),
-                        'nearest_red_coin': torch.FloatTensor(np.array([b[3]['nearest_red_coin'] for b in batch])).to(rl_bot.device),
+                        'coins': torch.FloatTensor(np.array([b[3]['coins'] for b in batch])).to(rl_bot.device),
+                        'red_coins': torch.FloatTensor(np.array([b[3]['red_coins'] for b in batch])).to(rl_bot.device),
                         'other_players': torch.FloatTensor(np.array([b[3]['other_players'] for b in batch])).to(rl_bot.device),
                         'time_left': torch.FloatTensor(np.array([b[3]['time_left'] for b in batch])).to(rl_bot.device),
                         'score': torch.FloatTensor(np.array([b[3]['score'] for b in batch])).to(rl_bot.device),
@@ -119,13 +121,14 @@ def train(episodes=10000):
                     loss = (weights * F.smooth_l1_loss(current_q.squeeze(), target_q, reduction='none')).mean()
                     
                     # Update priorities
+                    # store difference between target_q and current_q if we made huge error, then it will have higher priority
                     priorities = abs(target_q - current_q.squeeze()).detach().cpu().numpy()
                     rl_bot.memory.update_priorities(indices, priorities + 1e-6)
                     
                     # Optimize
                     rl_bot.optimizer.zero_grad()
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(rl_bot.model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(rl_bot.model.parameters(), 1.2)
                     rl_bot.optimizer.step()
             
             total_reward += reward
@@ -134,6 +137,7 @@ def train(episodes=10000):
             
             # Update target network
             if rl_bot.steps % rl_bot.update_target_every == 0:
+                print("Updating target network!")
                 rl_bot.target_model.load_state_dict(rl_bot.model.state_dict())
             
             # Update beta for prioritized replay
@@ -158,7 +162,7 @@ def train(episodes=10000):
                 'optimizer_state_dict': rl_bot.optimizer.state_dict(),
                 'episode': episode,
                 'best_reward': best_reward
-            }, 'best_model.pth')
+            }, 'best_model_red_coins.pth')
         
         if episode % 10 == 0:
             print(f"\nEpisode {episode}")
@@ -173,8 +177,8 @@ def train(episodes=10000):
 if __name__ == "__main__":
     # Add argument parsing
     parser = argparse.ArgumentParser(description='Train RL bot')
-    parser.add_argument('--episodes', type=int, default=10000,
-                      help='Number of episodes to train (default: 10000)')
+    parser.add_argument('--episodes', type=int, default=500,
+                      help='Number of episodes to train (default: 500)')
     
     args = parser.parse_args()
     train(episodes=args.episodes) 

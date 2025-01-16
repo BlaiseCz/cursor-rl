@@ -12,7 +12,6 @@ class CoinCollectionEnv(gym.Env):
     PLAYER_COLORS = {
         'human': (0, 0, 255),    # Blue
         'policy': (255, 0, 0),   # Red
-        'random': (0, 255, 0),   # Green
         'rl': (255, 165, 0)      # Orange
     }
     
@@ -21,7 +20,7 @@ class CoinCollectionEnv(gym.Env):
     PLAYER_SPEED = 5
     PLAYER_RADIUS = 10
     COIN_RADIUS = 5
-    COLLECTION_RADIUS = 20
+    COLLECTION_RADIUS = 10
     
     def __init__(self, map_size=(300, 300), render_mode=None, num_coins=10):
         super().__init__()
@@ -33,7 +32,7 @@ class CoinCollectionEnv(gym.Env):
         self.map_size = map_size
         self.render_mode = render_mode
         self.num_coins = num_coins
-        self.game_duration = 10  # seconds
+        self.game_duration = 15  # seconds
         self.max_steps = 300
         
         # Initialize spaces
@@ -58,7 +57,6 @@ class CoinCollectionEnv(gym.Env):
         self.action_space = spaces.Dict({
             'human': spaces.Discrete(4),
             'policy': spaces.Discrete(4),
-            'random': spaces.Discrete(4),
             'rl': spaces.Discrete(4)
         })
         
@@ -231,9 +229,7 @@ class CoinCollectionEnv(gym.Env):
             if np.any(red_collected):
                 # Update score (negative for red coins)
                 self.player_scores[player_name] -= np.sum(red_collected)
-                # Regenerate all red coins
-                self._generate_red_coins()
-    
+
     def _is_done(self):
         """Check if episode is done"""
         if self.render_mode == "human":
@@ -242,24 +238,73 @@ class CoinCollectionEnv(gym.Env):
     
     def _calculate_reward(self, previous_positions, previous_scores):
         """Calculate reward for RL agent"""
-        rl_pos = self.player_positions['rl']
         reward = 0.0
         
-        # Coin collection reward
+        # Coin collection reward (major positive reward)
         if previous_scores['rl'] < self.player_scores['rl']:
-            reward += 1.0
+            reward += 5.0  # Increased from 1.0 to emphasize coin collection
         
-        # Distance to nearest coin reward
+        # Red coin penalty (major negative reward)
+        if previous_scores['rl'] > self.player_scores['rl']:
+            reward -= 5.0  # Added explicit penalty for red coins
+        
+        # Competition reward (reward for collecting more coins than others)
+        other_coins_collected = sum(
+            1 for player, score in self.player_scores.items()
+            if player != 'rl' and score > previous_scores[player]
+        )
+        if other_coins_collected > 0:
+            reward -= 1.0  # Penalty when opponents collect coins
+        
+        # Distance-based rewards
         if len(self.coins) > 0:
-            distances = np.linalg.norm(self.coins - rl_pos, axis=1)
+            # Regular coins distance reward
+            distances = np.linalg.norm(self.coins - self.player_positions['rl'], axis=1)
             min_distance = np.min(distances)
             prev_distances = np.linalg.norm(self.coins - previous_positions['rl'], axis=1)
             prev_min_distance = np.min(prev_distances)
-            reward += (prev_min_distance - min_distance) / 100.0
+            
+            # Reward for moving closer to coins, penalty for moving away
+            distance_reward = (prev_min_distance - min_distance) / 30.0
+            reward += distance_reward
         
-        # Movement penalty
-        if np.array_equal(rl_pos, previous_positions['rl']):
-            reward -= 0.01
+        # Red coin avoidance reward
+        if len(self.red_coins) > 0:
+            red_distances = np.linalg.norm(self.red_coins - self.player_positions['rl'], axis=1)
+            min_red_distance = np.min(red_distances)
+            prev_red_distances = np.linalg.norm(self.red_coins - previous_positions['rl'], axis=1)
+            prev_min_red_distance = np.min(prev_red_distances)
+            
+            # Reward for moving away from red coins, penalty for moving closer
+            red_distance_reward = (min_red_distance - prev_min_red_distance) / 30.0
+            reward += red_distance_reward
+        
+        # Small penalty for standing still to encourage exploration
+        if np.array_equal(self.player_positions['rl'], previous_positions['rl']):
+            reward -= 0.1  # Increased from 0.01 to discourage inaction more strongly
+        
+        # Add competitive rewards
+        for player, score in self.player_scores.items():
+            if player != 'rl':
+                # Reward for maintaining score lead
+                score_difference = self.player_scores['rl'] - score
+                reward += np.tanh(score_difference) * 0.5
+                
+                # Penalty for letting opponent get too far ahead
+                if score > self.player_scores['rl']:
+                    reward -= 0.5
+        
+        # Add positioning rewards
+        rl_pos = self.player_positions['rl']
+        for player, pos in self.player_positions.items():
+            if player != 'rl':
+                # Reward for blocking opponent's path to coins
+                if len(self.coins) > 0:
+                    closest_coin = self.coins[np.argmin(np.linalg.norm(self.coins - rl_pos, axis=1))]
+                    opponent_dist = np.linalg.norm(pos - closest_coin)
+                    our_dist = np.linalg.norm(rl_pos - closest_coin)
+                    if our_dist < opponent_dist:
+                        reward += 0.3
         
         return reward
     
@@ -279,24 +324,41 @@ class CoinCollectionEnv(gym.Env):
         coin_list = self.coins.tolist() if len(self.coins.shape) == 2 and self.coins.shape[0] > 0 else []
         red_coin_list = self.red_coins.tolist() if len(self.red_coins.shape) == 2 and self.red_coins.shape[0] > 0 else []
         
-        # Calculate distances to nearest coins and red coins
-        nearest_coin_dist = float('inf')
-        nearest_coin_dir = np.array([0.0, 0.0])
+        # Calculate distances and directions to nearest 10 coins
+        coin_features = []
         if coin_list:
             distances = np.linalg.norm(self.coins - rl_pos, axis=1)
-            nearest_idx = np.argmin(distances)
-            nearest_coin_dist = distances[nearest_idx]
-            if nearest_coin_dist > 0:
-                nearest_coin_dir = (self.coins[nearest_idx] - rl_pos) / nearest_coin_dist
+            sorted_indices = np.argsort(distances)
+            for idx in sorted_indices[:10]:  # Get 10 closest coins
+                dist = distances[idx]
+                dir_vector = (self.coins[idx] - rl_pos) / max(dist, 1e-6)
+                coin_features.extend([
+                    dist / self.map_size[0],  # Normalized distance
+                    dir_vector[0],            # Direction x
+                    dir_vector[1]             # Direction y
+                ])
         
-        nearest_red_dist = float('inf')
-        nearest_red_dir = np.array([0.0, 0.0])
+        # Pad coin features if needed
+        while len(coin_features) < 30:  # 10 coins * 3 features
+            coin_features.extend([1.0, 0.0, 0.0])  # Large distance, zero direction
+        
+        # Calculate distances and directions to nearest 5 red coins
+        red_coin_features = []
         if len(red_coin_list) > 0:
             red_distances = np.linalg.norm(self.red_coins - rl_pos, axis=1)
-            nearest_red_idx = np.argmin(red_distances)
-            nearest_red_dist = red_distances[nearest_red_idx]
-            if nearest_red_dist > 0:
-                nearest_red_dir = (self.red_coins[nearest_red_idx] - rl_pos) / nearest_red_dist
+            sorted_indices = np.argsort(red_distances)
+            for idx in sorted_indices[:5]:  # Get all 5 red coins
+                dist = red_distances[idx]
+                dir_vector = (self.red_coins[idx] - rl_pos) / max(dist, 1e-6)
+                red_coin_features.extend([
+                    dist / self.map_size[0],  # Normalized distance
+                    dir_vector[0],            # Direction x
+                    dir_vector[1]             # Direction y
+                ])
+        
+        # Pad red coin features if needed
+        while len(red_coin_features) < 15:  # 5 red coins * 3 features
+            red_coin_features.extend([1.0, 0.0, 0.0])  # Large distance, zero direction
         
         # Calculate distances and directions to other players
         player_features = []
@@ -305,22 +367,14 @@ class CoinCollectionEnv(gym.Env):
             dir_vector = (other_pos - rl_pos) / max(dist, 1e-6)
             player_features.extend([dist / self.map_size[0], dir_vector[0], dir_vector[1]])
         
-        # Pad player features if needed (assuming max 3 other players)
-        while len(player_features) < 9:  # 3 players * 3 features
+        # Pad player features if needed
+        while len(player_features) < 6:  # 2 players * 3 features
             player_features.extend([1.0, 0.0, 0.0])  # Large distance, zero direction
         
         return {
             'position': rl_pos / self.map_size[0],  # Normalized position
-            'nearest_coin': np.array([
-                nearest_coin_dist / self.map_size[0],  # Normalized distance
-                nearest_coin_dir[0],
-                nearest_coin_dir[1]
-            ], dtype=np.float32),
-            'nearest_red_coin': np.array([
-                nearest_red_dist / self.map_size[0],  # Normalized distance
-                nearest_red_dir[0],
-                nearest_red_dir[1]
-            ], dtype=np.float32),
+            'coins': np.array(coin_features, dtype=np.float32),  # 10 closest coins
+            'red_coins': np.array(red_coin_features, dtype=np.float32),  # 5 red coins
             'other_players': np.array(player_features, dtype=np.float32),
             'time_left': np.array([self.game_duration - (time.time() - self.start_time)], dtype=np.float32),
             'score': np.array([self.player_scores['rl']], dtype=np.float32),

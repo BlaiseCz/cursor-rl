@@ -1,7 +1,9 @@
 import pygame
+
+from bots import PolicyBot, HumanBot
 from env import CoinCollectionEnv
-from bots import RandomBot, PolicyBot
 from rl_bot import RLBot
+
 
 def handle_human_input():
     keys = pygame.key.get_pressed()
@@ -74,7 +76,6 @@ def draw_game_over(window, scores, map_size):
     colors = {
         'human': (0, 0, 255),
         'policy': (255, 0, 0),
-        'random': (0, 255, 0),
         'rl': (0, 255, 0),
     }
     
@@ -113,15 +114,13 @@ def main():
     rl_bot = RLBot()
     rl_bot.load('best_model_red_coins.pth')  # Load trained model
     
-
     running = True
     while running:
-        # Initialize bots
         bots = {
-            'human': None,
-            'policy': PolicyBot(),
-            'random': RandomBot(),
-            'rl': rl_bot
+            # 'policy': PolicyBot(),
+            'rl': rl_bot,
+            'policy': HumanBot(),
+            'human': None
         }
         
         # Game loop
@@ -177,7 +176,7 @@ def main():
                 env.render()
                 
                 # Maintain constant frame rate
-                clock.tick(30)
+                clock.tick(50)
                 
                 if done and running:
                     # Show game over screen and wait for input

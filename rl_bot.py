@@ -1,14 +1,30 @@
+import random
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import numpy as np
-import random
-from collections import deque
+import torch.nn.functional as F
+
 from bots import BaseBot
+
 
 class DQN(nn.Module):
     def __init__(self, action_size=4):
         super(DQN, self).__init__()
+        
+        # Add attention mechanism for opponent positions
+        self.attention = nn.MultiheadAttention(embed_dim=64, num_heads=4)
+        
+        # Add opponent-specific processing
+        self.opponent_net = nn.Sequential(
+            nn.Linear(6, 128),
+            nn.ReLU(),
+            nn.LayerNorm(128),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.LayerNorm(64)
+        )
         
         # Process position (2D)
         self.position_net = nn.Sequential(
@@ -17,36 +33,47 @@ class DQN(nn.Module):
             nn.LayerNorm(64)
         )
         
-        # Process nearest coin information (3D: distance + direction)
-        self.coin_net = nn.Sequential(
-            nn.Linear(3, 64),
+        # Process multiple coins information (30D: 10 coins * (distance + direction))
+        self.coins_net = nn.Sequential(
+            nn.Linear(30, 256),
+            nn.Dropout(0.1),
+            nn.ReLU(),
+            nn.LayerNorm(256),
+            nn.Linear(256, 64),
             nn.ReLU(),
             nn.LayerNorm(64)
         )
         
-        # Process nearest red coin information (3D: distance + direction)
-        self.red_coin_net = nn.Sequential(
-            nn.Linear(3, 64),
+        # Process red coins information (15D: 5 coins * (distance + direction))
+        self.red_coins_net = nn.Sequential(
+            nn.Linear(15, 64),
             nn.ReLU(),
-            nn.LayerNorm(64)
+            nn.LayerNorm(64),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.LayerNorm(32)
         )
         
-        # Process other players information (9D: 3 players * (distance + direction))
+        # Process other players information (6D: 2 players * (distance + direction))
         self.players_net = nn.Sequential(
-            nn.Linear(9, 128),
+            nn.Linear(6, 128),
+            nn.Dropout(0.1),
             nn.ReLU(),
-            nn.LayerNorm(128)
+            nn.LayerNorm(128),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.LayerNorm(64)
         )
         
         # Process scalar features (time, score, counts)
         self.scalar_net = nn.Sequential(
-            nn.Linear(4, 64),
+            nn.Linear(4, 32),
             nn.ReLU(),
-            nn.LayerNorm(64)
+            nn.LayerNorm(32)
         )
         
         # Combine all features
-        combined_size = 64 + 64 + 64 + 128 + 64  # Sum of all feature sizes
+        combined_size = 64 + 64 + 64 + 32 + 32  # Updated to reflect new dimensions
         
         # Value stream (state value)
         self.value_stream = nn.Sequential(
@@ -54,7 +81,10 @@ class DQN(nn.Module):
             nn.ReLU(),
             nn.LayerNorm(256),
             nn.Dropout(0.1),
-            nn.Linear(256, 1)
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.LayerNorm(128),
+            nn.Linear(128, 1)
         )
         
         # Advantage stream (action advantages)
@@ -62,8 +92,11 @@ class DQN(nn.Module):
             nn.Linear(combined_size, 256),
             nn.ReLU(),
             nn.LayerNorm(256),
-            nn.Dropout(0.1),
-            nn.Linear(256, action_size)
+            nn.Dropout(0.2),  # Increased dropout
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.LayerNorm(128),
+            nn.Linear(128, action_size)
         )
         
         self.apply(self._init_weights)
@@ -77,9 +110,23 @@ class DQN(nn.Module):
     def forward(self, observation):
         # Extract features from observation dictionary
         pos_features = self.position_net(observation['position'])
-        coin_features = self.coin_net(observation['nearest_coin'])
-        red_coin_features = self.red_coin_net(observation['nearest_red_coin'])
-        player_features = self.players_net(observation['other_players'])
+        coins_features = self.coins_net(observation['coins'])
+        red_coins_features = self.red_coins_net(observation['red_coins'])
+        
+        # Process opponent features with attention
+        player_features_raw = self.players_net(observation['other_players'])
+        # Reshape for attention (sequence_length, batch_size, embed_dim)
+        player_features = player_features_raw.unsqueeze(0)  # Add sequence dimension
+        pos_features_expanded = pos_features.unsqueeze(0)  # Add sequence dimension
+        
+        # Apply attention between player positions and agent's position
+        attended_features, _ = self.attention(
+            player_features,  # query
+            pos_features_expanded,  # key
+            player_features  # value
+        )
+        # Squeeze back to original dimensions
+        attended_features = attended_features.squeeze(0)
         
         scalar_input = torch.cat([
             observation['time_left'],
@@ -89,12 +136,12 @@ class DQN(nn.Module):
         ], dim=1)
         scalar_features = self.scalar_net(scalar_input)
         
-        # Combine all features
+        # Combine all features, now using attended player features
         combined = torch.cat([
             pos_features,
-            coin_features,
-            red_coin_features,
-            player_features,
+            coins_features,
+            red_coins_features,
+            attended_features,  # Use attended features instead of raw player features
             scalar_features
         ], dim=1)
         
@@ -110,19 +157,19 @@ class RLBot(BaseBot):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = DQN().to(self.device)
         self.target_model = DQN().to(self.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=3e-4)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-4)
         
         # Prioritized Experience Replay
         self.memory = PrioritizedReplayBuffer(100000, alpha=0.6)
         self.beta = 0.4
-        self.beta_increment = 0.001
+        self.beta_increment = 0.0005
         
-        self.batch_size = 64
+        self.batch_size = 128
         self.gamma = 0.99
         self.epsilon = 1.0
         self.epsilon_min = 0.05
-        self.epsilon_decay = 0.995
-        self.update_target_every = 1000
+        self.epsilon_decay = 0.9995
+        self.update_target_every = 2500
         self.steps = 0
         
         # Learning rate scheduler
@@ -135,26 +182,33 @@ class RLBot(BaseBot):
             return random.randint(0, 3)
         
         with torch.no_grad():
-            # Convert numpy arrays to tensors
+            # Convert numpy arrays to tensors more efficiently
             obs = {
-                'position': torch.FloatTensor(observation['position']).unsqueeze(0).to(self.device),
-                'nearest_coin': torch.FloatTensor(observation['nearest_coin']).unsqueeze(0).to(self.device),
-                'nearest_red_coin': torch.FloatTensor(observation['nearest_red_coin']).unsqueeze(0).to(self.device),
-                'other_players': torch.FloatTensor(observation['other_players']).unsqueeze(0).to(self.device),
-                'time_left': torch.FloatTensor([observation['time_left']]).to(self.device),
-                'score': torch.FloatTensor([observation['score']]).to(self.device),
-                'coins_left': torch.FloatTensor([observation['coins_left']]).to(self.device),
-                'red_coins_left': torch.FloatTensor([observation['red_coins_left']]).to(self.device)
+                'position': torch.from_numpy(observation['position']).float().unsqueeze(0).to(self.device),
+                'coins': torch.from_numpy(observation['coins']).float().unsqueeze(0).to(self.device),
+                'red_coins': torch.from_numpy(observation['red_coins']).float().unsqueeze(0).to(self.device),
+                'other_players': torch.from_numpy(observation['other_players']).float().unsqueeze(0).to(self.device),
+                'time_left': torch.from_numpy(np.array([observation['time_left']], dtype=np.float32)).to(self.device),
+                'score': torch.from_numpy(np.array([observation['score']], dtype=np.float32)).to(self.device),
+                'coins_left': torch.from_numpy(np.array([observation['coins_left']], dtype=np.float32)).to(self.device),
+                'red_coins_left': torch.from_numpy(np.array([observation['red_coins_left']], dtype=np.float32)).to(self.device)
             }
             
             q_values = self.model(obs)
-            return torch.argmax(q_values).item()
+            temperature = 0.5
+            probs = F.softmax(q_values / temperature, dim=1)
+            return torch.multinomial(probs, 1).item()
 
     def load(self, path):
         """Load a trained model from a file"""
         try:
-            self.model.load_state_dict(torch.load(path, map_location=self.device))
-            self.target_model.load_state_dict(self.model.state_dict())
+            # Load the full checkpoint dictionary with weights_only=False since this is our own trusted model
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+            
+            # Extract just the model state dict
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.target_model.load_state_dict(checkpoint['model_state_dict'])
+            
             print(f"Successfully loaded model from {path}")
         except Exception as e:
             print(f"Error loading model: {e}")
